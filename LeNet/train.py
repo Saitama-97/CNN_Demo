@@ -17,7 +17,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch import optim
 
-from official.model import LeNet
+from LeNet.model import LeNet
 
 # 对图像进行预处理的函数
 # ToTensor：(HWC)->(CHW)

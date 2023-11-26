@@ -14,7 +14,7 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 
-from official.model import LeNet
+from LeNet.model import LeNet
 
 # 图片预处理函数(resize + 通道变换 + 归一化)
 transform = transforms.Compose(
