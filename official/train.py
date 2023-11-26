@@ -3,7 +3,7 @@
 """
   @Time    : 2023.11.24 10:48
   @File    : train.py
-  @Project : cnn_demo
+  @Project : CNN_demo
   @Author  : Saitama
   @IDE     : PyCharm
   @Desc    : CNN-Pytorch 官方Demo【LeNet+cifar10】
@@ -84,7 +84,7 @@ for epoch in range(20):
                 accuracy = (predict_y == test_label).sum().item() / test_label.size()[0]
                 # 打印结果
                 print("[%d, %5d] train_loss: %.3f test_accuracy: %.3f" % (
-                epoch + 1, step + 1, running_loss / 500, accuracy))
+                    epoch + 1, step + 1, running_loss / 500, accuracy))
                 # 一轮epoch结束，将累积损失清零
                 running_loss = 0.0
 

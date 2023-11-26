@@ -3,7 +3,7 @@
 """
   @Time    : 2023.11.24 10:50
   @File    : model.py
-  @Project : cnn_demo
+  @Project : CNN_demo
   @Author  : Saitama
   @IDE     : PyCharm
   @Desc    : CNN-Pytorch 官方Demo【LeNet+cifar10】
