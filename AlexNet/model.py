@@ -38,7 +38,7 @@ class AlexNet(nn.Module):
 
         self.classifier = nn.Sequential(
             nn.Dropout(0.5),  # 随机使50%的神经元失活
-            nn.Linear(12 * 6 * 6, 2048),
+            nn.Linear(128 * 6 * 6, 2048),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
             nn.Linear(2048, 2048),
@@ -52,7 +52,7 @@ class AlexNet(nn.Module):
     def __initialize_weights(self):
         for module in self.modules():
             if isinstance(module, nn.Conv2d):
-                nn.init.kaiming_normal(module.weight, mode="fan_out")
+                nn.init.kaiming_normal(module.weight, mode='fan_out', nonlinearity='relu')
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
             elif isinstance(module, nn.Linear):
@@ -64,3 +64,4 @@ class AlexNet(nn.Module):
         x = self.features(x)
         x = torch.flatten(x, start_dim=1)  # 因为Pytorch中的Tensor维度为 [batch, channel, height, width]，所以从channel开始
         x = self.classifier(x)
+        return x

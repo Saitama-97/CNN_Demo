@@ -82,7 +82,7 @@ save_path = "./weights/AlexNet.pth"
 # 最佳准确率
 best_acc = 0.0
 
-for epoch in range(10):
+for epoch in range(20):
     # train
     net.train()  # net.train()则会启用dropout【不希望在eval中使用dropout，因为会影响模型的效果】
     # 单次epoch中累积损失

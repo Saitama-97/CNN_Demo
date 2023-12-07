@@ -42,7 +42,7 @@ except Exception as e:
 # 初始化网络
 net = AlexNet()
 # 加载模型
-net.load_state_dict(torch.load("./weight/AlexNet.pth"))
+net.load_state_dict(torch.load("./weights/AlexNet.pth"))
 
 # 关闭dropout
 net.eval()
