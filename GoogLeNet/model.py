@@ -104,7 +104,7 @@ class GoogLeNet(nn.Module):
         x = self.fc(x)
 
         if self.training and self.aux_logits:
-            return x, aux1, aux2
+            return x, aux2, aux1
         return x
 
 
