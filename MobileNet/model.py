@@ -14,3 +14,17 @@ import torch
 import torch.nn as nn
 
 
+class ConvBNRelu(nn.Sequential):
+    def __init__(self, in_channel, out_channel, kernel_size=3, stride=1, groups=1):
+        padding = (kernel_size - 1) // 2
+        super(ConvBNRelu).__init__(
+            nn.Conv2d(in_channel, out_channel, kernel_size, stride, padding, groups, bias=False),
+            nn.BatchNorm2d(out_channel),
+            nn.ReLU6(inplace=True)
+        )
+
+
+"""
+TBD
+"""
+
