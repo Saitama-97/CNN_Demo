@@ -54,7 +54,7 @@ class InvertedResidual(nn.Module):
         assert (self.stride != 1) or (input_c == branch_features << 1)
 
         if self.stride == 2:
-            self.branch_left = nn.Sequential(
+            self.branch1 = nn.Sequential(
                 self.depthwise_conv(input_c, input_c, kernel_s=3, stride=2, padding=1),
                 nn.BatchNorm2d(input_c),
                 nn.Conv2d(input_c, branch_features, kernel_size=1, stride=1, padding=0, bias=False),
@@ -63,9 +63,9 @@ class InvertedResidual(nn.Module):
             )
         else:
             # stride 为1时，左边的branch不做任何处理
-            self.branch_left = nn.Sequential()
+            self.branch1 = nn.Sequential()
 
-        self.branch_right = nn.Sequential(
+        self.branch2 = nn.Sequential(
             # stride 为1时，input_channel 需要做 Channel Split 操作，所以应该除以2（即为branch_features）
             # stride 为2时，不需要做上述操作，所以不需要除以2
             nn.Conv2d(input_c if stride == 2 else branch_features, branch_features, kernel_size=1, stride=1, padding=0,
@@ -89,11 +89,11 @@ class InvertedResidual(nn.Module):
         if self.stride == 1:
             # stride 为1时，输入需要先进行分块【Channel Split】
             # dims=1 [batch, channel, height, width]
-            x1, x2 = x.chunk(2, dims=1)
-            out = torch.cat((x1, self.branch_right(x2)), dim=1)
+            x1, x2 = x.chunk(2, dim=1)
+            out = torch.cat((x1, self.branch2(x2)), dim=1)
         else:
             # stride 为2时，输入不需要先进行分块
-            out = torch.cat((self.branch_left(x), self.branch_right(x)), dim=1)
+            out = torch.cat((self.branch1(x), self.branch2(x)), dim=1)
 
         out = channel_shuffle(out, groups=2)
 
@@ -152,7 +152,7 @@ class ShuffleNetV2(nn.Module):
         output_channels = stage_out_channels[0]
 
         # 第一个卷积层，对应结构图中的 Conv1
-        self.Conv1 = nn.Sequential(
+        self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels=input_channels, out_channels=output_channels, kernel_size=3, stride=2, padding=1,
                       bias=False),
             nn.BatchNorm2d(output_channels),
@@ -163,7 +163,11 @@ class ShuffleNetV2(nn.Module):
         input_channels = output_channels
 
         # 最大池化层
-        self.MP = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        self.stage2: nn.Sequential
+        self.stage3: nn.Sequential
+        self.stage4: nn.Sequential
 
         # 搭建 Stage 2 ~ 4
         stage_names = ["stage{}".format(i) for i in [2, 3, 4]]
@@ -180,7 +184,7 @@ class ShuffleNetV2(nn.Module):
         # Conv5的输入维度：input_channels
         # Conv5的输出维度：output_channels = stage_out_channels[-1]
         output_channels = stage_out_channels[-1]
-        self.Conv5 = nn.Sequential(
+        self.conv5 = nn.Sequential(
             nn.Conv2d(in_channels=input_channels, out_channels=output_channels, kernel_size=1, stride=1,
                       padding=0, bias=False),
             nn.BatchNorm2d(output_channels),
@@ -188,7 +192,7 @@ class ShuffleNetV2(nn.Module):
         )
 
         # 全连接层
-        self.FC = nn.Linear(in_features=output_channels, out_features=num_classes)
+        self.fc = nn.Linear(in_features=output_channels, out_features=num_classes)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -196,14 +200,14 @@ class ShuffleNetV2(nn.Module):
         :param x:
         :return:
         """
-        out = self.Conv1(x)
-        out = self.MP(out)
+        out = self.conv1(x)
+        out = self.maxpool(out)
         out = self.stage2(out)
         out = self.stage3(out)
         out = self.stage4(out)
-        out = self.Conv5(out)
+        out = self.conv5(out)
         out = out.mean([2, 3])  # 全局池化
-        out = self.FC(out)
+        out = self.fc(out)
         return out
 
 
