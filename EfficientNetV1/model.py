@@ -8,9 +8,11 @@
   @IDE     : PyCharm
   @Desc    : 
 """
+from collections import OrderedDict
 from typing import Optional, Callable
 
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def _make_divisible(ch, divisor=8, min_ch=None):
@@ -83,3 +85,112 @@ class SqueezeExcitation(nn.Module):
         :param x:
         :return:
         """
+        scale = F.adaptive_avg_pool2d(x, output_size=(1, 1))
+        scale = self.fc1(scale)
+        self.ac1(scale)
+        scale = self.fc2(scale)
+        self.ac2(scale)
+
+        return x * scale
+
+
+class InvertedResidualConfig:
+    def __init__(self,
+                 kernel: int,
+                 input_c: int,
+                 out_c: int,
+                 expand_ratio: int,
+                 stride: int,
+                 use_se: bool,
+                 drop_rate: float,
+                 index: str,
+                 width_coefficient: float):
+        self.kernel = kernel
+        self.input_c = self.adjust_channels(input_c, width_coefficient)
+        self.expanded_c = self.input_c * expand_ratio
+        self.out_c = self.adjust_channels(out_c, width_coefficient)
+        self.use_se = use_se
+        self.stride = stride
+        self.drop_rate = drop_rate
+        self.index = index
+
+    @staticmethod
+    def adjust_channels(channels: int, width_coefficient: float):
+        return _make_divisible(channels * width_coefficient, 8)
+
+
+class InvertedResidual(nn.Module):
+    def __init__(self,
+                 cnf: InvertedResidualConfig,
+                 norm_layer: Callable[..., nn.Module]):
+        super(InvertedResidual, self).__init__()
+
+        if cnf.stride not in [1, 2]:
+            raise ValueError("illegal stride value")
+
+        # 是否使用 shortcut
+        self.use_connect = (cnf.stride == 1) and (cnf.input_c == cnf.out_c)
+
+        # 定义一个有序字典，按顺序存放不同层
+        layers = OrderedDict()
+        activation_layer = nn.SiLU  # alias SWISH
+
+        # layer-1：当n != 1时，使用 1x1 卷积层升维
+        if cnf.input_c != cnf.expanded_c:
+            layers.update({"expand_conv":
+                               ConvBnActivation(in_c=cnf.input_c,
+                                                out_c=cnf.expanded_c,
+                                                kernel_s=1,
+                                                stride=1,
+                                                groups=1,
+                                                normalize_layer=norm_layer,
+                                                activation_layer=activation_layer)})
+
+        # layer-2，DW 卷积层
+        layers.update({"dwconv": ConvBnActivation(in_c=cnf.expanded_c,
+                                                  out_c=cnf.expanded_c,
+                                                  kernel_s=cnf.kernel,
+                                                  stride=cnf.stride,
+                                                  groups=cnf.expanded_c,
+                                                  normalize_layer=norm_layer,
+                                                  activation_layer=activation_layer)})
+
+        # layer-3，SE模块
+        if cnf.use_se:
+            layers.update({"se": SqueezeExcitation(in_c=cnf.input_c,
+                                                   expand_c=cnf.expanded_c,
+                                                   squeeze_factor=4)})
+
+        # layer-4，卷积BN无激活
+        layers.update({"project_conv": ConvBnActivation(in_c=cnf.expanded_c,
+                                                        out_c=cnf.out_c,
+                                                        kernel_s=1,
+                                                        stride=1,
+                                                        groups=1,
+                                                        normalize_layer=norm_layer,
+                                                        activation_layer=nn.Identity)})  # nn.Identity()：Do Nothing !!!
+
+        # 把上述组件整合成一个 MBConv 模块
+        self.block = nn.Sequential(layers)
+        self.out_channels = cnf.out_c
+        self.is_strided = cnf.stride > 1  # ?
+
+        if cnf.drop_rate > 0:
+            self.dropout = nn.Dropout2d(p=cnf.drop_rate, inplace=True)
+        else:
+            self.dropout = nn.Identity()
+
+    def forward(self, x):
+        """
+        正向传播过程
+        :param x:
+        :return:
+        """
+        result = self.block(x)
+        result = self.dropout(x)
+
+        # 如果存在 shortcut，则将输入与dropout的输出相加
+        if self.use_connect:
+            result += x
+
+        return result
