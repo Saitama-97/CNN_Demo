@@ -35,6 +35,7 @@ def _make_divisible(ch, divisor=8, min_ch=None):
     return new_ch
 
 
+# *********************** 论文中使用的 dropout 方法 ***********************
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     """
     Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
@@ -68,6 +69,8 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training)
 
 
+# *********************** 论文中使用的 dropout 方法 ***********************
+
 class ConvBnActivation(nn.Sequential):
     """
     卷积层 + BN层 + 激活函数
@@ -81,6 +84,7 @@ class ConvBnActivation(nn.Sequential):
                  groups: int = 1,
                  normalize_layer: Optional[Callable[..., nn.Module]] = None,
                  activation_layer: Optional[Callable[..., nn.Module]] = None):
+
         padding = (kernel_s - 1) // 2
 
         if normalize_layer is None:
@@ -119,7 +123,7 @@ class SqueezeExcitation(nn.Module):
 
     def forward(self, x):
         """
-        正向传播过程
+        【SE模块】正向传播过程
         :param x:
         :return:
         """
@@ -157,17 +161,21 @@ class InvertedResidualConfig:
         return _make_divisible(channels * width_coefficient, 8)
 
 
-class InvertedResidual(nn.Module):
+class MBConv(nn.Module):
+    """
+    MBConv 模块
+    """
     def __init__(self,
                  cnf: InvertedResidualConfig,
                  norm_layer: Callable[..., nn.Module]):
-        super(InvertedResidual, self).__init__()
+
+        super(MBConv, self).__init__()
 
         if cnf.stride not in [1, 2]:
             raise ValueError("illegal stride value")
 
-        # 是否使用 shortcut
-        self.use_connect = (cnf.stride == 1 and cnf.input_c == cnf.out_c)
+        # 是否使用 shortcut【步距为1且输入channel等于输出channel时才使用shortcut】
+        self.has_shortcut = (cnf.stride == 1 and cnf.input_c == cnf.out_c)
 
         # 定义一个有序字典，按顺序存放不同层
         layers = OrderedDict()
@@ -208,7 +216,7 @@ class InvertedResidual(nn.Module):
         self.out_channels = cnf.out_c
         self.is_strided = cnf.stride > 1  # ?
 
-        if self.use_connect and cnf.drop_rate > 0:
+        if self.has_shortcut and cnf.drop_rate > 0:
             self.dropout = DropPath(cnf.drop_rate)
         else:
             self.dropout = nn.Identity()
@@ -223,7 +231,7 @@ class InvertedResidual(nn.Module):
         result = self.dropout(result)
 
         # 如果存在 shortcut，则将输入与dropout的输出相加
-        if self.use_connect:
+        if self.has_shortcut:
             result += x
 
         return result
@@ -258,7 +266,7 @@ class EfficientNet(nn.Module):
             return int(math.ceil(depth_coefficient * repeats))
 
         if block is None:
-            block = InvertedResidual
+            block = MBConv
 
         if norm_layer is None:
             norm_layer = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.1)
@@ -407,3 +415,5 @@ def generate_efficientnet_b7(num_classes=1000):
                         num_classes=num_classes,
                         dropout_rate=0.5,
                         drop_connect_rate=0.2)
+
+#
