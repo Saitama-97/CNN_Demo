@@ -35,6 +35,39 @@ def _make_divisible(ch, divisor=8, min_ch=None):
     return new_ch
 
 
+def drop_path(x, drop_prob: float = 0., training: bool = False):
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    "Deep Networks with Stochastic Depth", https://arxiv.org/pdf/1603.09382.pdf
+
+    This function is taken from the rwightman.
+    It can be seen here:
+    https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/layers/drop.py#L140
+    """
+    if drop_prob == 0. or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    random_tensor.floor_()  # binarize
+    output = x.div(keep_prob) * random_tensor
+    return output
+
+
+class DropPath(nn.Module):
+    """
+    Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
+    "Deep Networks with Stochastic Depth", https://arxiv.org/pdf/1603.09382.pdf
+    """
+
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
+
+
 class ConvBnActivation(nn.Sequential):
     """
     卷积层 + BN层 + 激活函数
@@ -61,6 +94,7 @@ class ConvBnActivation(nn.Sequential):
                                                          kernel_size=kernel_s,
                                                          stride=stride,
                                                          padding=padding,
+                                                         groups=groups,
                                                          bias=False),
                                                normalize_layer(out_c),
                                                activation_layer())
@@ -95,7 +129,7 @@ class SqueezeExcitation(nn.Module):
         scale = self.fc2(scale)
         self.ac2(scale)
 
-        return x * scale
+        return scale * x
 
 
 class InvertedResidualConfig:
@@ -133,7 +167,7 @@ class InvertedResidual(nn.Module):
             raise ValueError("illegal stride value")
 
         # 是否使用 shortcut
-        self.use_connect = (cnf.stride == 1) and (cnf.input_c == cnf.out_c)
+        self.use_connect = (cnf.stride == 1 and cnf.input_c == cnf.out_c)
 
         # 定义一个有序字典，按顺序存放不同层
         layers = OrderedDict()
@@ -145,8 +179,6 @@ class InvertedResidual(nn.Module):
                                ConvBnActivation(in_c=cnf.input_c,
                                                 out_c=cnf.expanded_c,
                                                 kernel_s=1,
-                                                stride=1,
-                                                groups=1,
                                                 normalize_layer=norm_layer,
                                                 activation_layer=activation_layer)})
 
@@ -162,15 +194,12 @@ class InvertedResidual(nn.Module):
         # layer-3，SE模块
         if cnf.use_se:
             layers.update({"se": SqueezeExcitation(in_c=cnf.input_c,
-                                                   expand_c=cnf.expanded_c,
-                                                   squeeze_factor=4)})
+                                                   expand_c=cnf.expanded_c)})
 
         # layer-4，卷积BN无激活
         layers.update({"project_conv": ConvBnActivation(in_c=cnf.expanded_c,
                                                         out_c=cnf.out_c,
                                                         kernel_s=1,
-                                                        stride=1,
-                                                        groups=1,
                                                         normalize_layer=norm_layer,
                                                         activation_layer=nn.Identity)})  # nn.Identity()：Do Nothing !!!
 
@@ -179,8 +208,8 @@ class InvertedResidual(nn.Module):
         self.out_channels = cnf.out_c
         self.is_strided = cnf.stride > 1  # ?
 
-        if cnf.drop_rate > 0:
-            self.dropout = nn.Dropout2d(p=cnf.drop_rate, inplace=True)
+        if self.use_connect and cnf.drop_rate > 0:
+            self.dropout = DropPath(cnf.drop_rate)
         else:
             self.dropout = nn.Identity()
 
@@ -191,7 +220,7 @@ class InvertedResidual(nn.Module):
         :return:
         """
         result = self.block(x)
-        result = self.dropout(x)
+        result = self.dropout(result)
 
         # 如果存在 shortcut，则将输入与dropout的输出相加
         if self.use_connect:
@@ -249,9 +278,9 @@ class EfficientNet(nn.Module):
             # 每个stage中block个数
             for i in range(round_repeats(cnf.pop(-1))):
                 if i > 0:
-                    cnf[4] = 1  # 非第一个block，stride为1
+                    cnf[-3] = 1  # 非第一个block，stride为1
                     cnf[1] = cnf[2]  # 非第一个block，输入输出channel相等
-                cnf[-1] *= b / num_blocks  # 更新dropout ratio
+                cnf[-1] = args[-2] * b / num_blocks  # 更新dropout ratio
                 index = str(stage + 1) + chr(i + 97)  # 第几个stage的第几个block
                 inverted_residual_setting.append(bneck_conf(*cnf, index))  # 生成当前stage的参数配置，存放到配置列表中
                 b += 1
@@ -264,7 +293,6 @@ class EfficientNet(nn.Module):
                                                      out_c=adjust_channels(32),
                                                      kernel_s=3,
                                                      stride=2,
-                                                     groups=1,
                                                      normalize_layer=norm_layer)})
         # 第二~八层：MBConv模块层【Stage2~8】
         for cnf in inverted_residual_setting:
@@ -277,7 +305,6 @@ class EfficientNet(nn.Module):
                                                out_c=last_conv_output_c,
                                                kernel_s=1,
                                                stride=1,
-                                               groups=1,
                                                normalize_layer=norm_layer)})
 
         # 第九层：池化层
@@ -292,17 +319,17 @@ class EfficientNet(nn.Module):
         classifier.append(nn.Linear(in_features=last_conv_output_c, out_features=num_classes))
         self.classifier = nn.Sequential(*classifier)
 
-        for module in self.modules():
-            if isinstance(module, nn.Conv2d):
-                nn.init.kaiming_normal_(module.weight, mode="fan_out")
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.BatchNorm2d):
-                nn.init.ones_(module.weight)
-                nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, 0, 0.01)
-                nn.init.zeros_(module.bias)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
         """

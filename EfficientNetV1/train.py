@@ -22,8 +22,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 
 from EfficientNetV1.model import generate_efficientnet_b0
-from ShuffleNet.my_dataset import MyDataSet
-from ShuffleNet.utils import train_one_epoch, evaluate
+from my_dataset import MyDataSet
+from utils import train_one_epoch, evaluate, read_split_data
 
 
 def main(args):
@@ -53,19 +53,14 @@ def main(args):
 
     # 数据预处理函数
     data_transform = {
-        "train": transforms.Compose([
-            transforms.RandomResizedCrop(img_size[num_model]),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-        "val": transforms.Compose([
-            transforms.Resize(img_size[num_model]),
-            transforms.CenterCrop(img_size[num_model]),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ])
-    }
+        "train": transforms.Compose([transforms.RandomResizedCrop(img_size[num_model]),
+                                     transforms.RandomHorizontalFlip(),
+                                     transforms.ToTensor(),
+                                     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])]),
+        "val": transforms.Compose([transforms.Resize(img_size[num_model]),
+                                   transforms.CenterCrop(img_size[num_model]),
+                                   transforms.ToTensor(),
+                                   transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])}
 
     # 训练用数据集
     train_dataset = MyDataSet(images_path=train_images_path,
@@ -132,6 +127,8 @@ def main(args):
     lf = lambda x: ((1 + math.cos(x * math.pi / args.epochs)) / 2) * (1 - args.lrf) + args.lrf  # cosine
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
 
+    best_acc = 0
+
     for epoch in range(args.epochs):
         # train
         mean_loss = train_one_epoch(model=model,
@@ -157,6 +154,10 @@ def main(args):
 
         torch.save(model.state_dict(), "./weights/model_{}.pth".format(epoch))
 
+        if acc > best_acc:
+            best_acc = acc
+            torch.save(model.state_dict(), "./weights/model_best.pth")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -165,17 +166,17 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=0.01)
-    parser.add_argument('--lrf', type=float, default=0.1)
+    parser.add_argument('--lrf', type=float, default=0.01)
 
     # 数据集所在根目录
     parser.add_argument('--data-path', type=str,
-                        default="./data/flower_photos")
+                        default="../ShuffleNet/data/flower_photos")
 
     # EfficientNet_b0 官方权重下载地址
     parser.add_argument('--weights', type=str,
-                        default='',
+                        default='./weights/efficientnetb0.pth',
                         help='initial weights path')
-    parser.add_argument('--freeze-layers', type=bool, default=True)
+    parser.add_argument('--freeze-layers', type=bool, default=False)
     parser.add_argument('--device', default='cuda:0', help='device id (i.e. 0 or 0,1 or cpu)')
 
     opts = parser.parse_args()
