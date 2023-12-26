@@ -8,9 +8,13 @@
   @IDE     : PyCharm
   @Desc    : 
 """
+import copy
+import math
 from collections import OrderedDict
+from functools import partial
 from typing import Optional, Callable
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -194,3 +198,185 @@ class InvertedResidual(nn.Module):
             result += x
 
         return result
+
+
+class EfficientNet(nn.Module):
+    def __init__(self,
+                 width_coefficient: float,
+                 depth_coefficient: float,
+                 num_classes: int = 1000,
+                 dropout_rate: float = 0.2,
+                 drop_connect_rate: float = 0.2,
+                 block: Optional[Callable[..., nn.Module]] = None,
+                 norm_layer: Optional[Callable[..., nn.Module]] = None):
+        super(EfficientNet, self).__init__()
+
+        # kernel_size, in_channel, out_channel, exp_ratio, stride, use_SE, drop_connect_rate, repeats
+        default_cnf = [[3, 32, 16, 1, 1, True, drop_connect_rate, 1],
+                       [3, 16, 24, 6, 2, True, drop_connect_rate, 2],
+                       [5, 24, 40, 6, 2, True, drop_connect_rate, 2],
+                       [3, 40, 80, 6, 2, True, drop_connect_rate, 3],
+                       [5, 80, 112, 6, 1, True, drop_connect_rate, 3],
+                       [5, 112, 192, 6, 2, True, drop_connect_rate, 4],
+                       [3, 192, 320, 6, 1, True, drop_connect_rate, 1]]
+
+        def round_repeats(repeats):
+            """
+            根据深度扩展因子，调整每个 stage 的深度（每个 stage 中 block 的重复次数）
+            :param repeats:
+            :return:
+            """
+            return int(math.ceil(depth_coefficient * repeats))
+
+        if block is None:
+            block = InvertedResidual
+
+        if norm_layer is None:
+            norm_layer = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.1)
+
+        adjust_channels = partial(InvertedResidualConfig.adjust_channels, width_coefficient=width_coefficient)
+
+        bneck_conf = partial(InvertedResidualConfig, width_coefficient=width_coefficient)
+
+        # MBConv 模块总数
+        num_blocks = float(sum(round_repeats(i[-1]) for i in default_cnf))
+
+        # 记录每个MBConv模块的参数配置信息
+        inverted_residual_setting = []
+        b = 0
+        for stage, args in enumerate(default_cnf):
+            cnf = copy.copy(args)
+            # 每个stage中block个数
+            for i in range(round_repeats(cnf.pop(-1))):
+                if i > 0:
+                    cnf[4] = 1  # 非第一个block，stride为1
+                    cnf[1] = cnf[2]  # 非第一个block，输入输出channel相等
+                cnf[-1] *= b / num_blocks  # 更新dropout ratio
+                index = str(stage + 1) + chr(i + 97)  # 第几个stage的第几个block
+                inverted_residual_setting.append(bneck_conf(*cnf, index))  # 生成当前stage的参数配置，存放到配置列表中
+                b += 1
+
+        # 网络层级结构
+        layers = OrderedDict()
+
+        # 第一层：3x3卷积层【Stage-1】
+        layers.update({"stem_conv": ConvBnActivation(in_c=3,
+                                                     out_c=adjust_channels(32),
+                                                     kernel_s=3,
+                                                     stride=2,
+                                                     groups=1,
+                                                     normalize_layer=norm_layer)})
+        # 第二~八层：MBConv模块层【Stage2~8】
+        for cnf in inverted_residual_setting:
+            layers.update({cnf.index: block(cnf, norm_layer)})
+
+        # 第九层：1x1卷积层，输入channel等于Stage-8的输出channel
+        last_conv_input_c = inverted_residual_setting[-1].out_c
+        last_conv_output_c = adjust_channels(1280)
+        layers.update({"top": ConvBnActivation(in_c=last_conv_input_c,
+                                               out_c=last_conv_output_c,
+                                               kernel_s=1,
+                                               stride=1,
+                                               groups=1,
+                                               normalize_layer=norm_layer)})
+
+        # 第九层：池化层
+        self.features = nn.Sequential(layers)
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+
+        # 第九层：全连接层
+        classifier = []
+        if dropout_rate > 0:
+            # 如果dropout_rate不为0，需要先进行dropout，才能进入全连接层
+            classifier.append(nn.Dropout2d(p=dropout_rate, inplace=True))
+        classifier.append(nn.Linear(in_features=last_conv_output_c, out_features=num_classes))
+        self.classifier = nn.Sequential(*classifier)
+
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(module.weight, mode="fan_out")
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, 0, 0.01)
+                nn.init.zeros_(module.bias)
+
+    def forward(self, x):
+        """
+        正向传播过程
+        :param x:
+        :return:
+        """
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+
+        return x
+
+
+def generate_efficientnet_b0(num_classes=1000):
+    return EfficientNet(width_coefficient=1.0,
+                        depth_coefficient=1.0,
+                        num_classes=num_classes,
+                        dropout_rate=0.2,
+                        drop_connect_rate=0.2)
+
+
+def generate_efficientnet_b1(num_classes=1000):
+    return EfficientNet(width_coefficient=1.0,
+                        depth_coefficient=1.1,
+                        num_classes=num_classes,
+                        dropout_rate=0.2,
+                        drop_connect_rate=0.2)
+
+
+def generate_efficientnet_b2(num_classes=1000):
+    return EfficientNet(width_coefficient=1.1,
+                        depth_coefficient=1.2,
+                        num_classes=num_classes,
+                        dropout_rate=0.3,
+                        drop_connect_rate=0.2)
+
+
+def generate_efficientnet_b3(num_classes=1000):
+    return EfficientNet(width_coefficient=1.2,
+                        depth_coefficient=1.4,
+                        num_classes=num_classes,
+                        dropout_rate=0.3,
+                        drop_connect_rate=0.2)
+
+
+def generate_efficientnet_b4(num_classes=1000):
+    return EfficientNet(width_coefficient=1.4,
+                        depth_coefficient=1.8,
+                        num_classes=num_classes,
+                        dropout_rate=0.4,
+                        drop_connect_rate=0.2)
+
+
+def generate_efficientnet_b5(num_classes=1000):
+    return EfficientNet(width_coefficient=1.6,
+                        depth_coefficient=2.2,
+                        num_classes=num_classes,
+                        dropout_rate=0.4,
+                        drop_connect_rate=0.2)
+
+
+def generate_efficientnet_b6(num_classes=1000):
+    return EfficientNet(width_coefficient=1.8,
+                        depth_coefficient=2.6,
+                        num_classes=num_classes,
+                        dropout_rate=0.5,
+                        drop_connect_rate=0.2)
+
+
+def generate_efficientnet_b7(num_classes=1000):
+    return EfficientNet(width_coefficient=2.0,
+                        depth_coefficient=3.1,
+                        num_classes=num_classes,
+                        dropout_rate=0.5,
+                        drop_connect_rate=0.2)
