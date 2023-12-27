@@ -165,6 +165,7 @@ class MBConv(nn.Module):
     """
     MBConv 模块
     """
+
     def __init__(self,
                  cnf: InvertedResidualConfig,
                  norm_layer: Callable[..., nn.Module]):
@@ -238,6 +239,10 @@ class MBConv(nn.Module):
 
 
 class EfficientNet(nn.Module):
+    """
+    EfficientNet
+    """
+
     def __init__(self,
                  width_coefficient: float,
                  depth_coefficient: float,
@@ -327,6 +332,7 @@ class EfficientNet(nn.Module):
         classifier.append(nn.Linear(in_features=last_conv_output_c, out_features=num_classes))
         self.classifier = nn.Sequential(*classifier)
 
+        # 初始化权重
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out")
