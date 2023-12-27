@@ -86,9 +86,9 @@ class ConvBnAct(nn.Module):
                               groups=groups,
                               bias=False)
         # BN层（输入channel等于卷积层的输出channel）
-        self.normalize_layer = normalize_layer(out_c)
+        self.bn = normalize_layer(out_c)
         # 激活函数
-        self.activation_layer = activation_layer()
+        self.act = activation_layer()
 
     def forward(self, x):
         """
@@ -115,10 +115,10 @@ class SqueezeExcitation(nn.Module):
                  ):
         super(SqueezeExcitation, self).__init__()
         squeeze_c = int(in_c * squeeze_ratio)  # 第一个全连接层的输出维度，应为整个模块的输入矩阵的维度的 1/4
-        self.fc1 = nn.Conv2d(expand_c, squeeze_c, kernel_size=1)  # 使用 1x1 的卷积替代全连接，可能是底层逻辑对卷积做了优化，可直接理解成全连接
-        self.ac1 = nn.SiLU()  # 激活函数，alias SWISH
-        self.fc2 = nn.Conv2d(squeeze_c, expand_c, kernel_size=1)
-        self.ac2 = nn.Sigmoid()  # 激活函数，Sigmoid
+        self.conv_reduce = nn.Conv2d(expand_c, squeeze_c, kernel_size=1)  # 使用 1x1 的卷积替代全连接，可能是底层逻辑对卷积做了优化，可直接理解成全连接
+        self.act1 = nn.SiLU()  # 激活函数，alias SWISH
+        self.conv_expand = nn.Conv2d(squeeze_c, expand_c, kernel_size=1)
+        self.act2 = nn.Sigmoid()  # 激活函数，Sigmoid
 
     def forward(self, x):
         """
@@ -172,8 +172,8 @@ class MBConv(nn.Module):
 
         # layer-2：DW 卷积层【输入输出维度相等】
         self.dwconv = ConvBnAct(
-            in_c=output_c,
-            out_c=output_c,
+            in_c=expand_c,
+            out_c=expand_c,
             kernel_s=kernel_s,
             stride=stride,
             groups=output_c,  # DW 卷积的卷积核个数与输入维度相等
@@ -184,7 +184,7 @@ class MBConv(nn.Module):
         # layer-3：SE 模块【因为V2中SE_ratio恒大于0，所以一定使用SE模块】
         self.se = SqueezeExcitation(in_c=input_c,
                                     expand_c=expand_c,
-                                    squeeze_factor=se_ratio)
+                                    squeeze_ratio=se_ratio) if se_ratio > 0 else nn.Identity()
 
         # layer-4：1x1 卷积层+BN层，无激活函数（所以使用nn.Identity）
         self.project_conv = ConvBnAct(in_c=expand_c,
@@ -339,7 +339,7 @@ class EfficientNetV2(nn.Module):
                                      expand_ratio=cnf[3],
                                      stride=cnf[2] if i == 0 else 1,
                                      se_ratio=cnf[-1],
-                                     dropout_rate=drop_connect_rate * block_id / total_blocks,
+                                     drop_rate=drop_connect_rate * block_id / total_blocks,
                                      norm_layer=norm_layer))
                 block_id += 1
 

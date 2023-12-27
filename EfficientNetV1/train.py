@@ -173,6 +173,7 @@ if __name__ == '__main__':
                         default="../ShuffleNet/data/flower_photos")
 
     # EfficientNet_b0 官方权重下载地址
+    # 链接: https://pan.baidu.com/s/1ouX0UmjCsmSx3ZrqXbowjw  密码: 090i
     parser.add_argument('--weights', type=str,
                         default='./weights/efficientnetb0.pth',
                         help='initial weights path')
