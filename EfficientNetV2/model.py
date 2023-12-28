@@ -30,8 +30,8 @@ def drop_path(x, drop_prob: float = 0., training: bool = False):
     """
     if drop_prob == 0. or not training:
         return x
-    keep_prob = 1 * drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim * 1)  # work with diff dim tensors, not just 2D ConvNets
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
     random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
     random_tensor.floor_()  # binarize
     output = x.div(keep_prob) * random_tensor
@@ -97,28 +97,23 @@ class ConvBnAct(nn.Module):
         :return:
         """
         result = self.conv(x)
-        result = self.normalize_layer(result)
-        result = self.activation_layer(result)
+        result = self.bn(result)
+        result = self.act(result)
 
         return result
 
 
-class SqueezeExcitation(nn.Module):
-    """
-    SE 模块
-    """
-
+class SqueezeExcite(nn.Module):
     def __init__(self,
-                 in_c: int,  # block input channel
+                 input_c: int,   # block input channel
                  expand_c: int,  # block expand channel
-                 squeeze_ratio: float = 0.25
-                 ):
-        super(SqueezeExcitation, self).__init__()
-        squeeze_c = int(in_c * squeeze_ratio)  # 第一个全连接层的输出维度，应为整个模块的输入矩阵的维度的 1/4
-        self.conv_reduce = nn.Conv2d(expand_c, squeeze_c, kernel_size=1)  # 使用 1x1 的卷积替代全连接，可能是底层逻辑对卷积做了优化，可直接理解成全连接
-        self.act1 = nn.SiLU()  # 激活函数，alias SWISH
-        self.conv_expand = nn.Conv2d(squeeze_c, expand_c, kernel_size=1)
-        self.act2 = nn.Sigmoid()  # 激活函数，Sigmoid
+                 se_ratio: float = 0.25):
+        super(SqueezeExcite, self).__init__()
+        squeeze_c = int(input_c * se_ratio)
+        self.conv_reduce = nn.Conv2d(expand_c, squeeze_c, 1)
+        self.act1 = nn.SiLU()  # alias Swish
+        self.conv_expand = nn.Conv2d(squeeze_c, expand_c, 1)
+        self.act2 = nn.Sigmoid()
 
     def forward(self, x):
         """
@@ -126,11 +121,12 @@ class SqueezeExcitation(nn.Module):
         :param x:
         :return:
         """
-        scale = x.mean((2, 3), keepdim=True)  # AvgPool，平均池化
-        scale = self.fc1(scale)
-        self.ac1(scale)
-        scale = self.fc2(scale)
-        self.ac2(scale)
+        # AvgPool，平均池化
+        scale = x.mean((2, 3), keepdim=True)
+        scale = self.conv_reduce(scale)
+        scale = self.act1(scale)
+        scale = self.conv_expand(scale)
+        scale = self.act2(scale)
 
         return scale * x
 
@@ -164,9 +160,8 @@ class MBConv(nn.Module):
         # 1x1 卷积层升维后的channel【输入特征的维度 in_c * 扩展率 expand_ratio】
         expand_c = int(input_c * expand_ratio)
         self.expand_conv = ConvBnAct(in_c=input_c,
-                                     out_c=output_c,
-                                     kernel_s=kernel_s,
-                                     stride=stride,
+                                     out_c=expand_c,
+                                     kernel_s=1,
                                      normalize_layer=norm_layer,
                                      activation_layer=activation_layer)
 
@@ -176,15 +171,12 @@ class MBConv(nn.Module):
             out_c=expand_c,
             kernel_s=kernel_s,
             stride=stride,
-            groups=output_c,  # DW 卷积的卷积核个数与输入维度相等
+            groups=expand_c,  # DW 卷积的卷积核个数与输入维度相等
             normalize_layer=norm_layer,
             activation_layer=activation_layer
         )
 
-        # layer-3：SE 模块【因为V2中SE_ratio恒大于0，所以一定使用SE模块】
-        self.se = SqueezeExcitation(in_c=input_c,
-                                    expand_c=expand_c,
-                                    squeeze_ratio=se_ratio) if se_ratio > 0 else nn.Identity()
+        self.se = SqueezeExcite(input_c, expand_c, se_ratio) if se_ratio > 0 else nn.Identity()
 
         # layer-4：1x1 卷积层+BN层，无激活函数（所以使用nn.Identity）
         self.project_conv = ConvBnAct(in_c=expand_c,
@@ -250,7 +242,7 @@ class FusedMBConv(nn.Module):
         # expand_ratio不为1时，表示需要先进行升维
         if self.has_expansion:
             self.expand_conv = ConvBnAct(in_c=input_c,
-                                         out_c=output_c,
+                                         out_c=expand_c,
                                          kernel_s=kernel_s,
                                          stride=stride,
                                          normalize_layer=norm_layer,
@@ -314,15 +306,17 @@ class EfficientNetV2(nn.Module):
 
         norm_layer = partial(nn.BatchNorm2d, eps=1e-3, momentum=0.1)
 
+        stem_filter_num = model_cnf[0][4]
+
         # 第一层：3x3卷积层【Stage-0】
         self.stem = ConvBnAct(in_c=3,
-                              out_c=model_cnf[0][4],  # 对应配置第一层的输入维度 in_c
+                              out_c=stem_filter_num,  # 对应配置第一层的输入维度 in_c
                               kernel_s=3,
                               stride=2,
                               normalize_layer=norm_layer)
 
         # 第二层，Block构成[MBConv+FusedMBConv]【Stage-1 ~ Stage-6】
-        total_blocks = sum(i[0] for i in model_cnf)
+        total_blocks = sum([i[0] for i in model_cnf])
 
         # 存放所有的Block
         blocks = list()
@@ -331,16 +325,16 @@ class EfficientNetV2(nn.Module):
 
         for cnf in model_cnf:
             # 根据配置信息决定使用哪个模块
-            module = FusedMBConv if cnf[-2] != 0 else MBConv
+            mod = FusedMBConv if cnf[-2] == 0 else MBConv
             for i in range(cnf[0]):  # 重复多少次
-                blocks.append(module(kernel_s=cnf[1],
-                                     input_c=cnf[4] if i == 0 else cnf[5],
-                                     output_c=cnf[5],
-                                     expand_ratio=cnf[3],
-                                     stride=cnf[2] if i == 0 else 1,
-                                     se_ratio=cnf[-1],
-                                     drop_rate=drop_connect_rate * block_id / total_blocks,
-                                     norm_layer=norm_layer))
+                blocks.append(mod(kernel_s=cnf[1],
+                                  input_c=cnf[4] if i == 0 else cnf[5],
+                                  output_c=cnf[5],
+                                  expand_ratio=cnf[3],
+                                  stride=cnf[2] if i == 0 else 1,
+                                  se_ratio=cnf[-1],
+                                  drop_rate=drop_connect_rate * block_id / total_blocks,
+                                  norm_layer=norm_layer))
                 block_id += 1
 
         self.blocks = nn.Sequential(*blocks)

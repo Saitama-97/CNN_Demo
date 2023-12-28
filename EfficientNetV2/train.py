@@ -180,5 +180,3 @@ if __name__ == '__main__':
     opts = parser.parse_args()
 
     main(opts)
-
-# KeyError: 'blocks.0.project_conv.bn.bias'

@@ -6,7 +6,7 @@ from PIL import Image
 from torchvision import transforms
 import matplotlib.pyplot as plt
 
-from model import shufflenet_v2_x1_0
+from model import generate_shufflenet_v2_x1_0
 
 
 def main():
@@ -36,7 +36,7 @@ def main():
         class_indict = json.load(f)
 
     # create model
-    model = shufflenet_v2_x1_0(num_classes=5).to(device)
+    model = generate_shufflenet_v2_x1_0(num_classes=5).to(device)
     # load model weights
     model_weight_path = "./weights/model-29.pth"
     model.load_state_dict(torch.load(model_weight_path, map_location=device))
