@@ -6,7 +6,7 @@
   @Project : CNN_Demo
   @Author  : Saitama
   @IDE     : PyCharm
-  @Desc    : 手搓 EfficientNet*V2
+  @Desc    : 手搓 EfficientNet-V2
             网络定义
 """
 from collections import OrderedDict
